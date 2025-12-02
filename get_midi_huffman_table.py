@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Script to compress MIDI piano roll data using Huffman coding
+Script to compress MIDI note intervals using Huffman coding
 and compare compressed vs uncompressed sizes.
+
+Symbols are intervals between successive notes: pitch[i+1] - pitch[i]
+This captures melodic contour and is transposition-invariant.
 """
 
 import argparse
@@ -25,11 +28,10 @@ class HuffmanNode:
         return self.freq < other.freq
 
 
-def build_huffman_tree(data: np.ndarray) -> Tuple[HuffmanNode, Dict[int, str]]:
+def build_huffman_tree(intervals: np.ndarray) -> Tuple[HuffmanNode, Dict[int, str]]:
     """Build Huffman tree and return root node and encoding dictionary"""
-    # Count frequencies
-    flat_data = data.flatten()
-    frequencies = Counter(flat_data.tolist())
+    # Count frequencies of intervals
+    frequencies = Counter(intervals.tolist())
     
     # Build priority queue
     heap = []
@@ -64,10 +66,9 @@ def build_huffman_tree(data: np.ndarray) -> Tuple[HuffmanNode, Dict[int, str]]:
     return root, encoding_dict
 
 
-def encode_data(data: np.ndarray, encoding_dict: Dict[int, str]) -> str:
-    """Encode data using Huffman encoding dictionary"""
-    flat_data = data.flatten()
-    encoded_bits = ''.join(encoding_dict[value] for value in flat_data)
+def encode_data(intervals: np.ndarray, encoding_dict: Dict[int, str]) -> str:
+    """Encode interval data using Huffman encoding dictionary"""
+    encoded_bits = ''.join(encoding_dict[interval] for interval in intervals)
     return encoded_bits
 
 
@@ -123,9 +124,35 @@ def calculate_compressed_size(encoded_bits: str, encoding_dict: Dict[int, str]) 
     return total_bytes
 
 
+def extract_note_intervals(midi_data: pretty_midi.PrettyMIDI) -> np.ndarray:
+    """
+    Extract note pitches from MIDI file and compute intervals between successive notes.
+    Returns array of intervals: pitch[i+1] - pitch[i]
+    """
+    # Collect all notes from all instruments
+    all_notes = []
+    for instrument in midi_data.instruments:
+        for note in instrument.notes:
+            all_notes.append((note.start, note.pitch))
+    
+    if len(all_notes) < 2:
+        raise ValueError("MIDI file must contain at least 2 notes to compute intervals")
+    
+    # Sort notes by start time
+    all_notes.sort(key=lambda x: x[0])
+    
+    # Extract pitches in chronological order
+    pitches = np.array([note[1] for note in all_notes], dtype=np.int32)
+    
+    # Compute intervals: pitch[i+1] - pitch[i]
+    intervals = np.diff(pitches)
+    
+    return intervals
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Compress MIDI piano roll using Huffman coding'
+        description='Compress MIDI note intervals using Huffman coding'
     )
     parser.add_argument(
         'midi_path',
@@ -140,55 +167,58 @@ def main():
         print(f"Loading MIDI file: {args.midi_path}")
         midi_data = pretty_midi.PrettyMIDI(args.midi_path)
         
-        # Get piano roll
-        print("Extracting piano roll...")
-        piano_roll = midi_data.get_piano_roll()
-
+        # Extract note intervals
+        print("Extracting note intervals...")
+        intervals = extract_note_intervals(midi_data)
+        
+        if len(intervals) == 0:
+            print("Error: No intervals could be computed from MIDI file")
+            sys.exit(1)
         
         # Get original size (in bytes)
-        original_size = piano_roll.nbytes
-        print(f"Original piano roll size: {original_size:,} bytes")
-        print(f"Piano roll shape: {piano_roll.shape}")
+        original_size = intervals.nbytes
+        print(f"Number of intervals: {len(intervals):,}")
+        print(f"Interval range: [{intervals.min()}, {intervals.max()}]")
+        print(f"Original interval data size: {original_size:,} bytes")
         
         # Build Huffman tree and get encoding
         print("Building Huffman tree...")
-        root, encoding_dict = build_huffman_tree(piano_roll)
+        root, encoding_dict = build_huffman_tree(intervals)
         
         if not encoding_dict or root is None:
             print("Error: Could not build encoding dictionary")
             sys.exit(1)
         
-        print(f"Number of unique values: {len(encoding_dict)}")
+        print(f"Number of unique interval values: {len(encoding_dict)}")
         
         # Encode data
-        print("Encoding data...")
-        encoded_bits = encode_data(piano_roll, encoding_dict)
+        print("Encoding intervals...")
+        encoded_bits = encode_data(intervals, encoding_dict)
         
         # Decode and verify correctness
         print("Decoding data to verify compression...")
-        original_shape = piano_roll.shape
-        original_flat = piano_roll.flatten()
-        decoded_flat = decode_data(encoded_bits, root, len(original_flat), piano_roll.dtype)
+        decoded_intervals = decode_data(encoded_bits, root, len(intervals), intervals.dtype)
+        print(f"Decoded intervals: {decoded_intervals}")
         
         # Compare original with decoded
-        if not np.array_equal(original_flat, decoded_flat):
+        if not np.array_equal(intervals, decoded_intervals):
             print("\n" + "="*50)
             print("ERROR: DECOMPRESSION VERIFICATION FAILED!")
             print("="*50)
-            print(f"Original shape: {original_shape}")
-            print(f"Decoded shape: {decoded_flat.shape}")
+            print(f"Original intervals length: {len(intervals)}")
+            print(f"Decoded intervals length: {len(decoded_intervals)}")
             
             # Find differences
-            differences = np.where(original_flat != decoded_flat)[0]
+            differences = np.where(intervals != decoded_intervals)[0]
             print(f"Number of mismatches: {len(differences)}")
             if len(differences) > 0:
                 print("First 10 mismatches:")
                 for idx in differences[:10]:
-                    print(f"  Index {idx}: original={original_flat[idx]}, decoded={decoded_flat[idx]}")
+                    print(f"  Index {idx}: original={intervals[idx]}, decoded={decoded_intervals[idx]}")
             
             raise ValueError("Decompressed data does not match original data!")
         
-        print("✓ Verification passed: Decompressed data matches original exactly")
+        print("✓ Verification passed: Decompressed intervals match original exactly")
         
         # Calculate compressed size
         compressed_size = calculate_compressed_size(encoded_bits, encoding_dict)
