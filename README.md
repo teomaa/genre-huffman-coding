@@ -1,5 +1,5 @@
-# genre-huffman-coding
-Huffman coding for music genre classification
+# Genre Huffman Coding
+This repo contains code for a project using Huffman coding for music genre classification. It was done for Tommaso Botta's Linear Algebra and Probability class at Columbia. See our [writeup](Quantifying_Genre_Patterns_in_Music_Through_Huffman_Compression.pdf)!
 
 # How to run
 - mkdir midi
